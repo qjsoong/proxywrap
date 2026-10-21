@@ -262,6 +262,8 @@ def initialize(directory: Path, platform: str, url_bytes=None, force=False):
         raise ProxyWrapError("Configuration directory must not be a symbolic link.")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
+    if os.geteuid() == 0:
+        os.chown(directory, 0, 0)
     for name in (
         "subscription.url",
         "subscription.yaml",
@@ -301,4 +303,6 @@ def initialize(directory: Path, platform: str, url_bytes=None, force=False):
         if file.is_symlink():
             raise ProxyWrapError("Configuration files must not be symbolic links.")
         if file.exists():
+            if os.geteuid() == 0:
+                os.chown(file, 0, 0)
             os.chmod(file, 0o600)

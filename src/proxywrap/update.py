@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -46,7 +47,18 @@ def download(url: str, user_agent: str = "ClashMeta") -> bytes:
     try:
         request = Request(url, headers={"User-Agent": user_agent, "Accept": "application/yaml"})
         with build_opener(SecureRedirect()).open(request, timeout=30) as response:
-            body = response.read(MAX_BYTES + 1)
+            deadline = time.monotonic() + 60
+            chunks = []
+            received = 0
+            while received <= MAX_BYTES:
+                if time.monotonic() >= deadline:
+                    raise ProxyWrapError("Subscription download exceeded its time limit.")
+                chunk = response.read1(min(65536, MAX_BYTES + 1 - received))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                received += len(chunk)
+            body = b"".join(chunks)
         if not body or len(body) > MAX_BYTES:
             raise ProxyWrapError("Subscription is empty or exceeds the 10 MiB limit.")
         return body
@@ -118,13 +130,21 @@ def recover(directory: Path, service, apply: bool):
     if not (transaction / "state.json").exists():
         shutil.rmtree(transaction)
         return
-    pending = json.loads((transaction / "state.json").read_text())
-    if pending.get("was_running") and not apply and service.status():
+    try:
+        pending = json.loads((transaction / "state.json").read_text())
+        if not isinstance(pending, dict):
+            raise ValueError
+    except (ValueError, OSError):
+        raise ProxyWrapError(
+            "Update recovery state is unreadable; stop Mihomo and inspect .transaction privately."
+        ) from None
+    currently_running = service.status()
+    if not apply and currently_running:
         raise ProxyWrapError(
             "Interrupted active update needs recovery; run sudo proxywrap update first."
         )
     state = _restore(directory, transaction)
-    if state.get("was_running") and apply:
+    if apply and (state.get("was_running") or currently_running):
         service.restart()
     shutil.rmtree(transaction)
     fsync_dir(directory)

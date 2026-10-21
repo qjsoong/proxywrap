@@ -131,6 +131,10 @@ def main(argv=None):
                         print(f"{name}: " + ("present, private" if good else "missing or insecure"))
                 else:
                     print("Run sudo proxywrap doctor to check private configuration permissions.")
+                if settings["platform"] == "darwin":
+                    print(
+                        "macOS LAN DNS can bypass TUN; review resolvers and overlapping fake-IP ranges."
+                    )
                 print("Service state does not prove DNS, route or egress correctness.")
             return 0 if running else 3
         if args.command == "update":

@@ -137,6 +137,20 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue(transaction.exists())
         self.assertEqual((self.directory / "config.yaml").read_bytes(), b"candidate: true")
 
+    def test_recovery_reconciles_candidate_autostarted_after_interruption(self):
+        before = self.prime()
+        transaction = self.directory / ".transaction"
+        transaction.mkdir()
+        atomic_write(transaction / "config.yaml", before)
+        atomic_write(
+            transaction / "state.json",
+            json.dumps({"config.yaml": True, "was_running": False}).encode(),
+        )
+        atomic_write(self.directory / "config.yaml", b"candidate: true")
+        recover(self.directory, self.service, True)
+        self.service.restart.assert_called_once()
+        self.assertEqual((self.directory / "config.yaml").read_bytes(), before)
+
     def test_parallel_update_rejected(self):
         entered = threading.Event()
         release = threading.Event()
