@@ -92,6 +92,17 @@ PY
             ;;
     esac
 }
+pw_packaged_default() {
+    local expected actual
+    expected="$(dpkg-query -W -f='${Conffiles}' mihomo 2>/dev/null |
+        awk '$1 == "/etc/mihomo/config.yaml" {print $2}')" || return 1
+    [[ "$expected" =~ ^[a-f0-9]{32}$ ]] || return 1
+    actual="$(pw_root md5sum /etc/mihomo/config.yaml 2>/dev/null | awk '{print $1}')" || return 1
+    [[ "$actual" == "$expected" ]]
+}
+pw_package_binary() {
+    dpkg-query -L mihomo 2>/dev/null | awk '/\/bin\/mihomo$/ {print; exit}'
+}
 pw_install_linux() {
     [[ -r /etc/os-release ]] || pw_die 'Cannot identify this Linux distribution.'
     # os-release is an operating-system-owned shell assignment file.
@@ -103,7 +114,13 @@ pw_install_linux() {
     esac
     command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]] ||
         pw_die 'A running systemd installation is required.'
-    PW_ARCH="$(pw_arch "$(uname -m)")" || pw_die 'Unsupported Linux CPU architecture.'
+    PW_ARCH="$(pw_arch "$(dpkg --print-architecture)")" ||
+        pw_die 'Unsupported Debian package architecture.'
+    if [[ "$PW_ARCH" == armv7 ]]; then
+        case "$(uname -m)" in armv7*|armv8*|aarch64) ;;
+            *) pw_die 'The official ARMv7 package requires an ARMv7 or newer processor.' ;;
+        esac
+    fi
     pw_info 'Installing required Debian packages.'
     pw_root apt-get update
     pw_root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -113,7 +130,11 @@ pw_install_linux() {
     PW_PACKAGE_DEFAULT=0
     PW_BINARY="$(command -v mihomo || true)"
     if [[ -n "$PW_BINARY" && "$PW_VERSION_SET" -eq 0 ]]; then
-        pw_info 'Keeping the existing Mihomo binary; subscription updates never upgrade it.'
+        PW_BINARY="$(pw_package_binary || true)"
+        [[ -n "$PW_BINARY" && -x "$PW_BINARY" ]] ||
+            pw_die 'An unmanaged Mihomo binary exists. Review it before installing the official package.'
+        if pw_packaged_default; then PW_PACKAGE_DEFAULT=1; fi
+        pw_info 'Keeping the existing official Mihomo package; subscription updates never upgrade it.'
         return
     fi
     if systemctl is-active --quiet mihomo.service; then
@@ -140,7 +161,7 @@ pw_install_linux() {
         pw_root systemctl unmask --runtime mihomo.service
         PW_MASKED=0
     fi
-    PW_BINARY="$(command -v mihomo || true)"
+    PW_BINARY="$(pw_package_binary || true)"
     [[ -n "$PW_BINARY" ]] || pw_die 'The official package did not install a Mihomo executable.'
 }
 pw_find_brew() {
@@ -174,7 +195,7 @@ pw_install_macos() {
         PW_BREW="$(pw_find_brew || true)"
     fi
     [[ -n "$PW_BREW" ]] || pw_die 'Homebrew was not found in PATH or the system path registry.'
-    "$PW_BREW" install mihomo python
+    HOMEBREW_NO_INSTALL_UPGRADE=1 "$PW_BREW" install mihomo python
     local brew_prefix mihomo_prefix python_prefix
     brew_prefix="$("$PW_BREW" --prefix)"
     mihomo_prefix="$("$PW_BREW" --prefix mihomo)"
@@ -184,6 +205,10 @@ pw_install_macos() {
     [[ -x "$PW_PYTHON" ]] || PW_PYTHON="$python_prefix/bin/python3"
     PW_PACKAGE_DEFAULT=0
     PW_CONFIG="$brew_prefix/etc/mihomo"
+    if [[ -f "$mihomo_prefix/.bottle/etc/mihomo/config.yaml" ]] &&
+        pw_root cmp -s "$PW_CONFIG/config.yaml" "$mihomo_prefix/.bottle/etc/mihomo/config.yaml"; then
+        PW_PACKAGE_DEFAULT=1
+    fi
     [[ -x "$PW_PYTHON" && -x "$PW_BINARY" ]] || pw_die 'Homebrew installed paths are incomplete.'
 }
 pw_cleanup() {

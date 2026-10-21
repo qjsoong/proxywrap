@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import errno
+import os
 import plistlib
+import shlex
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -11,7 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from proxywrap.errors import ProxyWrapError
-from proxywrap.services import Service, _systemd_argument
+from proxywrap.services import NETWORK_GATE, Service, _systemd_argument
 
 
 class NativeManager:
@@ -117,10 +120,50 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("ExecStart=\nExecStart=", content)
         self.assertIn(str(self.config), content)
         self.assertIn("Restart=on-failure", content)
+        self.assertIn("Wants=network-online.target", content)
+        self.assertIn("After=network-online.target", content)
+        self.assertIn("StartLimitIntervalSec=0", content)
+        self.assertIn("ExecStartPre=", content)
+        self.assertIn('\\"$$family\\"', content)
         self.assertIn("CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE", content)
         self.assertEqual(dropin.stat().st_mode & 0o777, 0o644)
         self.assertTrue(self.manager.running)
         self.assertEqual(self.manager.calls[-1], ["systemctl", "daemon-reload"])
+
+    def test_network_gate_waits_for_a_usable_main_default_route(self):
+        fake_bin = self.root / "fake bin"
+        fake_bin.mkdir()
+        ip = fake_bin / "ip"
+        ip.write_text(
+            '#!/bin/sh\ncase "$1" in\n'
+            '-4) printf "%s\\n" "$PW_TEST_IPV4" ;;\n'
+            '-6) printf "%s\\n" "$PW_TEST_IPV6" ;;\nesac\n'
+        )
+        ip.chmod(0o755)
+        script = NETWORK_GATE.replace(
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH=" + shlex.quote(str(fake_bin) + ":/usr/bin:/bin:/usr/sbin:/sbin"),
+            1,
+        )
+        for ipv4, ipv6, ready in (
+            ("", "", False),
+            ("default via 192.0.2.1 dev eth0", "", True),
+            ("", "default via fe80::1 dev enp0s1 proto ra", True),
+            ("default dev eth0 scope link", "", True),
+            ("default via 192.0.2.1 dev eth0 linkdown", "", False),
+            ("default dev mihomo scope link", "default dev lo", False),
+            ("blackhole default", "", False),
+        ):
+            with self.subTest(ipv4=ipv4, ipv6=ipv6):
+                result = subprocess.run(
+                    ["/bin/sh", "-ec", script],
+                    env=dict(os.environ, PW_TEST_IPV4=ipv4, PW_TEST_IPV6=ipv6),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode == 0, ready, result.stderr)
+                self.assertEqual(result.stdout, "")
 
     def test_linux_fallback_only_when_no_service_exists(self):
         self.manager.load_state = "not-found"
@@ -143,6 +186,63 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ProxyWrapError, "systemd"):
             service.install()
         self.assertFalse(service.systemd_dir.exists())
+
+    def test_running_unmanaged_service_requires_explicit_stop(self):
+        self.manager.running = True
+        service = self.service()
+        with self.assertRaisesRegex(ProxyWrapError, "Stop it explicitly"):
+            service.preflight_adoption(managed=False)
+        self.assertTrue(self.manager.running)
+        self.assertFalse(service.systemd_dir.exists())
+        self.assertFalse(any(args[1] == "stop" for args in self.manager.calls))
+
+    def test_identical_managed_running_command_is_preserved(self):
+        self.manager.running = True
+        service = self.service()
+        command = (
+            b"\0".join(str(item).encode() for item in (service.binary, "-d", service.config_dir))
+            + b"\0"
+        )
+        with patch("proxywrap.services.Path.read_bytes", return_value=command):
+            service.preflight_adoption(managed=True)
+        self.assertTrue(self.manager.running)
+        self.assertFalse(any(args[1] in ("stop", "start") for args in self.manager.calls))
+
+    def test_changed_managed_running_arguments_are_diagnosed_privately(self):
+        self.manager.running = True
+        service = self.service()
+        with patch(
+            "proxywrap.services.Path.read_bytes",
+            return_value=b"/mihomo\0-d\0/private-token\0",
+        ):
+            with self.assertRaisesRegex(ProxyWrapError, "different service arguments") as result:
+                service.preflight_adoption(managed=True)
+        self.assertNotIn("private-token", str(result.exception))
+        self.assertTrue(self.manager.running)
+
+    @patch.dict("os.environ", {"SUDO_UID": "501"})
+    def test_macos_adoption_requires_homebrew_job_explicitly_stopped(self):
+        self.manager.brew_jobs.add("gui/501/homebrew.mxcl.mihomo")
+        service = self.service("darwin")
+        with self.assertRaisesRegex(ProxyWrapError, "Homebrew.*loaded"):
+            service.preflight_adoption(managed=False)
+        self.assertEqual(self.manager.brew_jobs, {"gui/501/homebrew.mxcl.mihomo"})
+        self.assertFalse(self.manager.disabled)
+        self.assertFalse(any(args[1] == "bootout" for args in self.manager.calls))
+
+    def test_definition_paths_and_reload_do_not_change_core_state(self):
+        service = self.service()
+        paths = service.definition_paths()
+        self.assertEqual(paths[0], service.systemd_dir / "mihomo.service")
+        self.assertEqual(paths[1].name, "10-proxywrap.conf")
+        service.reload_definition()
+        self.assertEqual(self.manager.calls[-1], ["systemctl", "daemon-reload"])
+        self.assertFalse(self.manager.running)
+        mac = self.service("darwin")
+        self.assertEqual(mac.definition_paths(), [mac.plist_path])
+        before = list(self.manager.calls)
+        mac.reload_definition()
+        self.assertEqual(self.manager.calls, before)
 
     def test_systemd_arguments_preserve_spaces_and_literal_specifiers(self):
         self.assertEqual(_systemd_argument('/path/a $%"\\b'), '"/path/a $$%%\\"\\\\b"')
@@ -248,6 +348,28 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(self.manager.running)
         self.assertTrue(self.manager.enabled)
 
+    def test_linux_stop_cancels_native_retries_without_a_running_pid(self):
+        service = self.service()
+        self.manager.running = False
+        service.stop()
+        self.assertIn(["systemctl", "stop", "mihomo.service"], self.manager.calls)
+
+    def test_linux_stop_accepts_only_verified_missing_unit_failure(self):
+        service = self.service()
+
+        def failed_stop(args, **kwargs):
+            if args[1] == "stop":
+                return subprocess.CompletedProcess(args, 5, stdout="", stderr="private-token")
+            return self.manager(args, **kwargs)
+
+        service._runner = failed_stop
+        self.manager.load_state = "not-found"
+        service.stop()
+        self.manager.load_state = "loaded"
+        with self.assertRaisesRegex(ProxyWrapError, "could not stop") as result:
+            service.stop()
+        self.assertNotIn("private-token", str(result.exception))
+
     def test_linux_enabled_uses_native_unprivileged_query(self):
         service = self.service()
         self.assertTrue(service.enabled())
@@ -270,6 +392,47 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ProxyWrapError, "port 7890") as error:
                 service.start()
         self.assertNotIn("secret-token", str(error.exception))
+        self.assertFalse(any(args[1] == "start" for args in self.manager.calls))
+
+    def test_bsd_tcp_conflict_detected_when_bind_succeeds_but_listen_fails(self):
+        service = self.service()
+        probe = MagicMock()
+        probe.__enter__.return_value.listen.side_effect = OSError(errno.EADDRINUSE, "private-token")
+        with patch("proxywrap.services.socket.socket", return_value=probe):
+            with self.assertRaisesRegex(ProxyWrapError, "TCP port 7890") as error:
+                service.start()
+        self.assertNotIn("private-token", str(error.exception))
+        self.assertFalse(any(args[1] == "start" for args in self.manager.calls))
+
+    def test_udp_port_probe_does_not_enable_address_reuse(self):
+        service = self.service()
+        probes = []
+
+        def create_socket(family, kind):
+            probe = MagicMock()
+            probes.append((kind, probe.__enter__.return_value))
+            return probe
+
+        with patch("proxywrap.services.socket.socket", side_effect=create_socket):
+            service._check_ports()
+        datagrams = [probe for kind, probe in probes if kind == socket.SOCK_DGRAM]
+        self.assertTrue(datagrams)
+        for probe in datagrams:
+            probe.setsockopt.assert_not_called()
+            probe.listen.assert_not_called()
+
+    def test_bsd_specific_loopback_listener_blocks_wildcard_start(self):
+        service = self.service()
+        probe = MagicMock()
+
+        def bind(address):
+            if address[0] == "127.0.0.1":
+                raise OSError(errno.EADDRINUSE, "private-token")
+
+        probe.__enter__.return_value.bind.side_effect = bind
+        with patch("proxywrap.services.socket.socket", return_value=probe):
+            with self.assertRaisesRegex(ProxyWrapError, "port 7890"):
+                service.start()
         self.assertFalse(any(args[1] == "start" for args in self.manager.calls))
 
     def test_manager_failures_do_not_leak_command_output(self):

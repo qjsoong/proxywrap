@@ -21,6 +21,15 @@ import yaml
 
 from .errors import ProxyWrapError
 
+NETWORK_GATE = (
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH; "
+    "for family in -4 -6; do "
+    'if ip "$family" route show table main default 2>/dev/null | '
+    "grep -Ev '(^| )linkdown( |$)| dev (lo|mihomo)( |$)' | "
+    "grep -Eq '^default( .*)? dev [^ ]+'; then exit 0; fi; "
+    "done; exit 1"
+)
+
 
 def _systemd_argument(value: str) -> str:
     """Quote one ExecStart argument without specifier or variable expansion."""
@@ -134,6 +143,58 @@ class Service:
         else:
             self._install_launchd()
 
+    def definition_paths(self) -> list[Path]:
+        """Return only definitions this manager may create or replace."""
+        if self.platform == "linux":
+            return [
+                self.systemd_dir / self.name,
+                self.systemd_dir / f"{self.name}.d" / "10-proxywrap.conf",
+            ]
+        return [self.plist_path]
+
+    def reload_definition(self) -> None:
+        """Reload restored Linux definitions without changing process state."""
+        self._require_root()
+        if self.platform == "linux":
+            self._run(["systemctl", "daemon-reload"])
+
+    def preflight_adoption(self, managed: bool) -> None:
+        """Require explicit stop before adopting a different running deployment."""
+        self._require_root()
+        running, pid = self._state()
+        if running and not managed:
+            raise ProxyWrapError(
+                "An unmanaged Mihomo service is running. Stop it explicitly before "
+                "installing ProxyWrap; --force does not authorize stopping it."
+            )
+        if self.platform == "linux":
+            if not running and pid.isdecimal() and int(pid) > 0:
+                raise ProxyWrapError(
+                    "Mihomo is changing service state. Wait for it to settle or stop it "
+                    "explicitly before redeploying."
+                )
+            if running:
+                try:
+                    raw = (Path("/proc") / pid / "cmdline").read_bytes()
+                    arguments = [os.fsdecode(item) for item in raw.rstrip(b"\0").split(b"\0")]
+                except OSError:
+                    raise ProxyWrapError(
+                        "Cannot verify the running Mihomo command. Stop it explicitly "
+                        "before redeploying."
+                    ) from None
+                if arguments != [str(self.binary), "-d", str(self.config_dir)]:
+                    raise ProxyWrapError(
+                        "Running Mihomo uses different service arguments. Stop it "
+                        "explicitly before redeploying with the recorded paths."
+                    )
+        else:
+            for target in self._brew_targets():
+                if self._run(["launchctl", "print", target], check=False).returncode == 0:
+                    raise ProxyWrapError(
+                        "A Homebrew Mihomo service is loaded. Stop it explicitly before "
+                        "installing ProxyWrap to preserve recovery of the previous service."
+                    )
+
     def _install_systemd(self) -> None:
         result = self._run(
             ["systemctl", "show", "--property=LoadState", "--value", self.name], check=False
@@ -156,10 +217,14 @@ class Service:
         arguments = " ".join(
             _systemd_argument(str(item)) for item in (self.binary, "-d", self.config_dir)
         )
+        gate = " ".join(_systemd_argument(item) for item in ("/bin/sh", "-ec", NETWORK_GATE))
         dropin = (
-            "# Managed by ProxyWrap.\n[Service]\n"
+            "# Managed by ProxyWrap.\n[Unit]\n"
+            "Wants=network-online.target\nAfter=network-online.target\n"
+            "StartLimitIntervalSec=0\n\n[Service]\n"
             "Environment=SKIP_SYSTEM_IPV6_CHECK=1\n"
             "User=root\nGroup=root\n"
+            f"ExecStartPre={gate}\n"
             "ExecStart=\n"
             f"ExecStart={arguments}\n"
             "Restart=on-failure\nRestartSec=3\nTimeoutStopSec=20\nLimitNOFILE=1048576\n"
@@ -191,13 +256,15 @@ class Service:
                 raise ProxyWrapError("The Homebrew installation user does not exist.") from None
         return uids
 
-    def _retire_brew_services(self) -> None:
-        """Disable only Mihomo's known Homebrew jobs, never unrelated processes."""
+    def _brew_targets(self) -> list[str]:
         domains = ["system"]
         for uid in sorted(self._brew_uids()):
             domains.extend((f"gui/{uid}", f"user/{uid}"))
-        for domain in domains:
-            target = f"{domain}/homebrew.mxcl.mihomo"
+        return [f"{domain}/homebrew.mxcl.mihomo" for domain in domains]
+
+    def _retire_brew_services(self) -> None:
+        """Disable only Mihomo's known Homebrew jobs, never unrelated processes."""
+        for target in self._brew_targets():
             present = self._run(["launchctl", "print", target], check=False).returncode == 0
             # A persistent disable also prevents an unloaded Brew plist from
             # launching on the next login or reboot. Absent user domains can fail.
@@ -208,7 +275,7 @@ class Service:
                 self._run(["launchctl", "bootout", target])
                 if self._run(["launchctl", "print", target], check=False).returncode == 0:
                     raise ProxyWrapError("The competing Homebrew Mihomo service is still loaded.")
-            elif domain == "system" and disabled.returncode:
+            elif target.startswith("system/") and disabled.returncode:
                 raise ProxyWrapError("Unable to disable the system Homebrew Mihomo service.")
 
     def _install_launchd(self) -> None:
@@ -323,12 +390,24 @@ class Service:
                     listeners.add((address.strip("[]"), int(raw_port), socket.SOCK_STREAM))
                     if value == dns_listen:
                         listeners.add((address.strip("[]"), int(raw_port), socket.SOCK_DGRAM))
+        for address, port, kind in tuple(listeners):
+            # BSD permits some wildcard/specific listener combinations. Probe
+            # loopback explicitly so an existing local listener is diagnosed.
+            if address == "0.0.0.0":
+                listeners.add(("127.0.0.1", port, kind))
+            elif address == "::":
+                listeners.add(("::1", port, kind))
         for address, port, kind in sorted(listeners):
             family = socket.AF_INET6 if ":" in address else socket.AF_INET
             try:
                 with socket.socket(family, kind) as probe:
-                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    if kind == socket.SOCK_STREAM:
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     probe.bind((address, port))
+                    if kind == socket.SOCK_STREAM:
+                        # BSD can permit overlapping binds with SO_REUSEADDR;
+                        # listening is what detects the competing live socket.
+                        probe.listen(1)
             except OSError as error:
                 if error.errno in (errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT):
                     continue
@@ -374,7 +453,17 @@ class Service:
         """Request a native graceful stop, preserving boot activation."""
         self._require_root()
         if self.platform == "linux":
-            self._run(["systemctl", "stop", self.name])
+            result = self._run(["systemctl", "stop", self.name], check=False)
+            if result.returncode:
+                state = self._run(
+                    ["systemctl", "show", "--property=LoadState", "--value", self.name],
+                    check=False,
+                )
+                if state.stdout.strip() != "not-found":
+                    raise ProxyWrapError(
+                        "The native service manager could not stop Mihomo. "
+                        "Inspect its protected logs locally."
+                    )
         elif self._run(["launchctl", "print", self.target], check=False).returncode == 0:
             self._run(["launchctl", "bootout", self.target])
         if self.status():

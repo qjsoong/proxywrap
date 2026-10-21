@@ -13,7 +13,7 @@ import sys
 from .config import atomic_write, check_safety, initialize, read_yaml, validate_url
 from .errors import ProxyWrapError
 from .services import Service
-from .update import _update, locked, validate_core
+from .update import _update, locked, recover, validate_core
 
 SETTINGS_PATH = Path(
     "/Library/Preferences/io.github.proxywrap.json"
@@ -37,6 +37,10 @@ def check_ports(directory: Path):
     if mixed:
         host = config.get("bind-address", "*") if config.get("allow-lan") else "127.0.0.1"
         listeners.append(("mixed-port", "0.0.0.0" if host == "*" else host, mixed))
+        if host in ("*", "0.0.0.0"):
+            listeners.append(("mixed-port", "127.0.0.1", mixed))
+        elif host.strip("[]") == "::":
+            listeners.append(("mixed-port", "::1", mixed))
     controller = config.get("external-controller", "")
     if controller:
         host, port = controller.rsplit(":", 1)
@@ -51,6 +55,7 @@ def check_ports(directory: Path):
             with socket.socket(family, socket.SOCK_STREAM) as probe:
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind((host, port))
+                probe.listen(1)
         except (OSError, ValueError, TypeError):
             raise ProxyWrapError(
                 f"Cannot bind {label} listener. Check its address/port and other running services; "
@@ -70,6 +75,17 @@ def _snapshot(directory: Path, settings_path: Path, service: Service) -> Path:
         state["files"][filename] = source.exists()
         if source.exists():
             atomic_write(transaction / filename, source.read_bytes())
+    state["definitions"] = []
+    for index, definition in enumerate(service.definition_paths()):
+        if definition.is_symlink():
+            shutil.rmtree(transaction)
+            raise ProxyWrapError("Managed service definitions must not be symbolic links.")
+        saved_name = f"definition-{index}"
+        state["definitions"].append(
+            {"path": str(definition), "existed": definition.exists(), "backup": saved_name}
+        )
+        if definition.exists():
+            atomic_write(transaction / saved_name, definition.read_bytes())
     state["settings_existed"] = settings_path.exists()
     if settings_path.exists():
         atomic_write(transaction / "settings.json", settings_path.read_bytes())
@@ -83,6 +99,26 @@ def _restore(directory: Path, transaction: Path, settings_path: Path, service: S
         shutil.rmtree(transaction)
         return
     state = json.loads(state_file.read_text())
+    if state["settings_existed"]:
+        service = Service(json.loads((transaction / "settings.json").read_text()))
+    if not state["was_running"]:
+        service.stop()
+    definitions_changed = False
+    for definition in state.get("definitions", []):
+        target = Path(definition["path"])
+        saved = transaction / definition["backup"]
+        changed = target.exists() != definition["existed"]
+        if target.exists() and saved.exists():
+            changed = target.read_bytes() != saved.read_bytes()
+        if changed:
+            definitions_changed = True
+            if definition["existed"]:
+                target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                atomic_write(target, saved.read_bytes(), mode=0o644)
+            else:
+                target.unlink(missing_ok=True)
+    if definitions_changed:
+        service.reload_definition()
     current = directory / "config.yaml"
     old_config = transaction / "config.yaml"
     config_changed = current.exists() != state["files"]["config.yaml"]
@@ -98,12 +134,15 @@ def _restore(directory: Path, transaction: Path, settings_path: Path, service: S
         atomic_write(settings_path, (transaction / "settings.json").read_bytes(), mode=0o644)
     else:
         settings_path.unlink(missing_ok=True)
-    if state["was_running"] and (config_changed or not service.status()):
+    if state["was_running"] and (config_changed or definitions_changed or not service.status()):
         service.restart()
     elif not state["was_running"] and service.status():
         service.stop()
     if not state["was_enabled"]:
         service.disable()
+    inner = directory / ".transaction"
+    if inner.exists():
+        shutil.rmtree(inner)
     shutil.rmtree(transaction)
 
 
@@ -130,7 +169,6 @@ def deploy(
         raise ProxyWrapError("Deployment paths must not be symbolic links.")
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     settings_path.parent.mkdir(parents=True, mode=0o755, exist_ok=True)
-    os.chmod(directory, 0o700)
     service = Service(settings)
     with locked(directory):
         pending = directory / ".deploy-transaction"
@@ -164,12 +202,23 @@ def deploy(
                 "An unmanaged Mihomo configuration already exists. Review it, then use --force "
                 "to back it up before installing ProxyWrap."
             )
+        service.preflight_adoption(managed=old_settings is not None)
         saved_url = directory / "subscription.url"
         if url_bytes is not None:
             new_url = validate_url(url_bytes)
             if saved_url.exists() and validate_url(saved_url.read_bytes()) != new_url and not force:
                 raise ProxyWrapError("Use --force to back up and replace a saved subscription URL.")
         existing = old_settings is not None and (directory / "config.yaml").exists()
+        for filename in CONFIG_FILES:
+            if (directory / filename).is_symlink():
+                raise ProxyWrapError("Configuration files must not be symbolic links.")
+        os.chmod(directory, 0o700)
+        if os.geteuid() == 0:
+            os.chown(directory, 0, 0)
+            for filename in CONFIG_FILES:
+                if (directory / filename).exists():
+                    os.chown(directory / filename, 0, 0)
+        recover(directory, service, apply=True)
         transaction = _snapshot(directory, settings_path, service)
         try:
             initialize(directory, settings["platform"], url_bytes=url_bytes, force=force)
@@ -212,6 +261,11 @@ def deploy(
         )
     print("Dashboard: http://127.0.0.1:9090/ui (available while Mihomo is running).")
     print("Use sudo proxywrap auth show to inspect LAN credentials privately.")
+    if settings["platform"] == "darwin":
+        print(
+            "macOS LAN DNS requests can bypass TUN hijacking. Review system resolvers and "
+            "verify DNS and hostname traffic; see docs/security.md."
+        )
 
 
 def _read_input(args, config_dir: Path):

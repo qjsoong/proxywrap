@@ -21,6 +21,15 @@ class FakeService:
         self.calls = []
         self.fail_start = False
 
+    def preflight_adoption(self, *, managed):
+        pass
+
+    def definition_paths(self):
+        return []
+
+    def reload_definition(self):
+        self.calls.append("reload")
+
     def status(self):
         return self.running
 
@@ -117,6 +126,41 @@ class DeployTests(unittest.TestCase):
         self.assertFalse(self.metadata.exists())
         self.assertFalse(self.service.boot)
 
+    def test_failed_install_restores_native_definition_before_service_recovery(self):
+        self.existing()
+        definition = self.root / "service.plist"
+        definition.write_bytes(b"original service definition")
+        self.service.definition_paths = lambda: [definition]
+
+        def fail_install():
+            definition.write_bytes(b"broken replacement")
+            raise ProxyWrapError("Definition deployment failed.")
+
+        self.service.install = fail_install
+        with patch("proxywrap.deploy._update", side_effect=self.effective):
+            with self.assertRaisesRegex(ProxyWrapError, "Definition deployment"):
+                self.run_deploy(force=True)
+        self.assertEqual(definition.read_bytes(), b"original service definition")
+        self.assertIn("reload", self.service.calls)
+
+    def test_outer_rollback_discards_inner_update_journal_after_recovery(self):
+        self.existing()
+        original = (self.directory / "config.yaml").read_bytes()
+
+        def failed_nested_update(*args, **kwargs):
+            journal = self.directory / ".transaction"
+            journal.mkdir()
+            (journal / "state.json").write_text('{"was_running": false}')
+            (journal / "config.yaml").write_bytes(b"intermediate invalid config")
+            atomic_write(self.directory / "config.yaml", b"broken application")
+            raise ProxyWrapError("Inner rollback failed.")
+
+        with patch("proxywrap.deploy._update", side_effect=failed_nested_update):
+            with self.assertRaisesRegex(ProxyWrapError, "Inner rollback"):
+                self.run_deploy(force=True)
+        self.assertEqual((self.directory / "config.yaml").read_bytes(), original)
+        self.assertFalse((self.directory / ".transaction").exists())
+
     def test_unmanaged_config_requires_explicit_force(self):
         self.directory.mkdir()
         (self.directory / "config.yaml").write_bytes(b"rules: [MATCH,DIRECT]\n")
@@ -195,6 +239,22 @@ class InstallerShellTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.splitlines(), ["amd64-v1", "arm64", "armv7"])
         self.assertNotEqual(self.shell("pw_arch unsupported").returncode, 0)
+
+    def test_package_default_retry_accepts_only_matching_package_checksum(self):
+        matching = self.shell(
+            "dpkg-query() { printf '/etc/mihomo/config.yaml "
+            "0123456789abcdef0123456789abcdef\\n'; }; "
+            "pw_root() { printf '0123456789abcdef0123456789abcdef  ignored\\n'; }; "
+            "pw_packaged_default"
+        )
+        self.assertEqual(matching.returncode, 0)
+        modified = self.shell(
+            "dpkg-query() { printf '/etc/mihomo/config.yaml "
+            "0123456789abcdef0123456789abcdef\\n'; }; "
+            "pw_root() { printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ignored\\n'; }; "
+            "pw_packaged_default"
+        )
+        self.assertNotEqual(modified.returncode, 0)
 
     def test_help_is_safe_and_has_all_public_options(self):
         result = self.shell("pw_help")
