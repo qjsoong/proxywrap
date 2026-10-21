@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proxywrap"
+version = "0.1.0a1"
+description = "A lightweight, cross-platform wrapper for proxy cores"
+requires-python = ">=3.10"
+dependencies = ["PyYAML==6.0.3"]
+
+[project.optional-dependencies]
+dev = ["ruff==0.14.1"]
+
+[project.scripts]
+proxywrap = "proxywrap.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100

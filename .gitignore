@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+.coverage
+subscription.url
+subscription.yaml
+config.yaml
+override.yaml
+proxywrap.json
+*.log
+.DS_Store
