@@ -1,0 +1,14 @@
+# Installed as override-platform.yaml. Platform values take precedence.
+tun:
+  enable: true
+  stack: mips
+  auto-route: true
+  auto-detect-interface: true
+  strict-route: false
+  inet6-address:
+  - fdfe:dcba:9876::1/126
+  dns-hijack:
+  - any:53
+  - tcp://any:53
+  device: mihomo
+  auto-redirect: true

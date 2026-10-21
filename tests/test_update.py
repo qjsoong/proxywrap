@@ -19,7 +19,11 @@ class UpdateTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         initialize(self.directory, "linux", b"https://example.com/sub?token=must-not-log")
-        self.settings = {"platform": "linux", "config_dir": self.temp.name, "binary": "/fake/mihomo"}
+        self.settings = {
+            "platform": "linux",
+            "config_dir": self.temp.name,
+            "binary": "/fake/mihomo",
+        }
         self.service = Mock()
         self.service.status.return_value = True
         self.mock_service = patch("proxywrap.update.Service", return_value=self.service).start()
@@ -34,12 +38,16 @@ class UpdateTests(unittest.TestCase):
 
     def test_install_complete_and_unchanged_does_not_restart(self):
         self.prime()
-        self.assertEqual(read_yaml(self.directory / "config.yaml")["dns"]["nameserver"], ["1.1.1.1"])
+        self.assertEqual(
+            read_yaml(self.directory / "config.yaml")["dns"]["nameserver"], ["1.1.1.1"]
+        )
         self.assertFalse(update(self.settings))
         self.service.restart.assert_not_called()
-        self.mock_download.return_value = RAW + b'# new comment\n'
+        self.mock_download.return_value = RAW + b"# new comment\n"
         self.assertFalse(update(self.settings))
-        self.assertTrue((self.directory / "subscription.yaml").read_bytes().endswith(b"# new comment\n"))
+        self.assertTrue(
+            (self.directory / "subscription.yaml").read_bytes().endswith(b"# new comment\n")
+        )
 
     def test_changed_local_override_restarts_and_retains_upstream_fields(self):
         self.prime()
@@ -92,12 +100,42 @@ class UpdateTests(unittest.TestCase):
         recover(self.directory, self.service, True)
         self.assertEqual((self.directory / "config.yaml").read_bytes(), before)
 
+    def test_platform_override_cannot_silently_defeat_credential_reset(self):
+        self.prime()
+        with (self.directory / "override-platform.yaml").open("ab") as stream:
+            stream.write(b"authentication: [proxywrap:platform_password_123456]\n")
+        with self.assertRaisesRegex(ProxyWrapError, "higher-priority"):
+            update(self.settings, edit=lambda c: dict(c, authentication=["proxywrap:" + "y" * 32]))
+        self.service.restart.assert_not_called()
+
     def test_stopped_service_stays_stopped(self):
         self.prime()
         self.service.status.return_value = False
         self.mock_download.return_value = RAW + b"other: true\n"
         update(self.settings)
         self.service.restart.assert_not_called()
+
+    def test_interrupted_deploy_blocks_regular_update(self):
+        self.prime()
+        (self.directory / ".deploy-transaction").mkdir()
+        with self.assertRaisesRegex(ProxyWrapError, "rerun install.sh"):
+            update(self.settings)
+        self.service.restart.assert_not_called()
+
+    def test_inactive_apply_cannot_discard_active_recovery(self):
+        before = self.prime()
+        transaction = self.directory / ".transaction"
+        transaction.mkdir()
+        atomic_write(transaction / "config.yaml", before)
+        atomic_write(
+            transaction / "state.json",
+            json.dumps({"config.yaml": True, "was_running": True}).encode(),
+        )
+        atomic_write(self.directory / "config.yaml", b"candidate: true")
+        with self.assertRaisesRegex(ProxyWrapError, "needs recovery"):
+            recover(self.directory, self.service, False)
+        self.assertTrue(transaction.exists())
+        self.assertEqual((self.directory / "config.yaml").read_bytes(), b"candidate: true")
 
     def test_parallel_update_rejected(self):
         entered = threading.Event()
@@ -107,6 +145,7 @@ class UpdateTests(unittest.TestCase):
             with locked(self.directory):
                 entered.set()
                 release.wait(5)
+
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(hold)
             self.assertTrue(entered.wait(3))
@@ -122,8 +161,12 @@ class UpdateTests(unittest.TestCase):
         transaction = self.directory / ".transaction"
         transaction.mkdir()
         atomic_write(transaction / "config.yaml", before)
-        atomic_write(transaction / "state.json", json.dumps({"config.yaml": True,
-                     "subscription.yaml": False, "was_running": True}).encode())
+        atomic_write(
+            transaction / "state.json",
+            json.dumps(
+                {"config.yaml": True, "subscription.yaml": False, "was_running": True}
+            ).encode(),
+        )
         atomic_write(self.directory / "config.yaml", b"bad: true")
         recover(self.directory, self.service, True)
         self.assertEqual((self.directory / "config.yaml").read_bytes(), before)

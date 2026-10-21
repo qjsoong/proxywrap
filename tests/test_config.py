@@ -4,14 +4,24 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from proxywrap.config import (COMMON, TUN, check_safety, check_subscription, dump,
-                              initialize, merge, parse, read_yaml, validate_url)
+from proxywrap.config import (
+    COMMON,
+    TUN,
+    check_safety,
+    check_subscription,
+    dump,
+    initialize,
+    merge,
+    parse,
+    read_yaml,
+    validate_url,
+)
 from proxywrap.errors import ProxyWrapError
 
 
 class ConfigTests(unittest.TestCase):
     def test_complete_subscription_and_unknown_fields_survive(self):
-        subscription = parse(b'''dns:
+        subscription = parse(b"""dns:
   enable: true
   nameserver: [https://dns.example/dns-query]
   ipv6: false
@@ -21,7 +31,7 @@ proxy-groups: [{name: Main, type: select, use: [provider]}]
 rules: [MATCH,Main]
 rule-providers: {}
 future-feature: {nested: [one, two]}
-''')
+""")
         check_subscription(subscription)
         merged = merge(subscription, COMMON)
         self.assertEqual(merged["dns"], subscription["dns"])
@@ -30,8 +40,7 @@ future-feature: {nested: [one, two]}
 
     def test_deep_merge_replaces_sequences_and_scalars(self):
         low = {"nested": {"a": 1, "b": [1, 2]}, "untouched": 3, "scalar": 1}
-        result = merge(merge(low, {"nested": {"b": [3]}, "scalar": None}),
-                       {"nested": {"a": 8}})
+        result = merge(merge(low, {"nested": {"b": [3]}, "scalar": None}), {"nested": {"a": 8}})
         self.assertEqual(result, {"nested": {"a": 8, "b": [3]}, "untouched": 3, "scalar": None})
         self.assertEqual(low["nested"]["b"], [1, 2])
 
@@ -44,12 +53,24 @@ future-feature: {nested: [one, two]}
                 check_subscription(data)
         check_subscription({"rules": ["MATCH,DIRECT"]})
 
+    def test_yaml_merge_keys_support_explicit_precedence(self):
+        value = parse(b"base: &base {a: 1, b: 2}\ncustom: {<<: *base, a: 3}\n")
+        self.assertEqual(value["custom"], {"a": 3, "b": 2})
+
     def test_url_security(self):
-        self.assertEqual(validate_url(b"https://example.com/x?token=private\n"),
-                         "https://example.com/x?token=private")
+        self.assertEqual(
+            validate_url(b"https://example.com/x?token=private\n"),
+            "https://example.com/x?token=private",
+        )
         self.assertTrue(validate_url("http://127.0.0.1:8888/test"))
-        for url in ("file:///tmp/x", "http://example.com", "https://u:p@example.com",
-                    "https://example.com/\nX", "https://"):
+        for url in (
+            "file:///tmp/x",
+            "http://example.com",
+            "https://u:p@example.com",
+            "https://example.com/\nX",
+            "https://",
+            "https://example.com/\x00token",
+        ):
             with self.assertRaises(ProxyWrapError):
                 validate_url(url)
 
@@ -75,10 +96,15 @@ future-feature: {nested: [one, two]}
 
     def test_safety_rejects_insecure_or_incompatible_configuration(self):
         safe = merge(COMMON, {"tun": TUN, "authentication": ["proxywrap:" + "x" * 32]})
-        for override in ({"external-controller": "0.0.0.0:9090"}, {"authentication": []},
-                         {"skip-auth-prefixes": ["0.0.0.0/0"]}, {"ipv6": False},
-                         {"tun": {"inet6-address": []}}, {"dns": {"enable": False}},
-                         {"listeners": [{"type": "http", "port": 1234}]}):
+        for override in (
+            {"external-controller": "0.0.0.0:9090"},
+            {"authentication": []},
+            {"skip-auth-prefixes": ["0.0.0.0/0"]},
+            {"ipv6": False},
+            {"tun": {"inet6-address": []}},
+            {"dns": {"enable": False}},
+            {"listeners": [{"type": "http", "port": 1234}]},
+        ):
             with self.subTest(override=override), self.assertRaises(ProxyWrapError):
                 check_safety(merge(copy.deepcopy(safe), override))
 

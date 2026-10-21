@@ -1,6 +1,8 @@
 """Serialized subscription transactions with durable recovery and service rollback."""
 
 from contextlib import contextmanager
+import copy
+from http.client import HTTPException
 import fcntl
 import json
 import os
@@ -8,18 +10,32 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .config import (MAX_BYTES, atomic_write, check_safety, check_subscription, dump,
-                     fsync_dir, merge, parse, read_yaml, validate_url)
+from .config import (
+    MAX_BYTES,
+    atomic_write,
+    check_safety,
+    check_subscription,
+    dump,
+    fsync_dir,
+    merge,
+    parse,
+    read_yaml,
+    validate_url,
+)
 from .errors import ProxyWrapError
 from .services import Service
 
 
 class SecureRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_url(newurl)
+        try:
+            validate_url(newurl)
+        except ProxyWrapError:
+            fp.close()
+            raise
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -34,8 +50,15 @@ def download(url: str, user_agent: str = "ClashMeta") -> bytes:
         if not body or len(body) > MAX_BYTES:
             raise ProxyWrapError("Subscription is empty or exceeds the 10 MiB limit.")
         return body
-    except (URLError, OSError, ValueError):
-        raise ProxyWrapError("Subscription download failed; check connectivity, URL file and TLS.") from None
+    except HTTPError as error:
+        error.close()
+        raise ProxyWrapError(
+            "Subscription download failed; check connectivity, URL file and TLS."
+        ) from None
+    except (URLError, OSError, ValueError, HTTPException):
+        raise ProxyWrapError(
+            "Subscription download failed; check connectivity, URL file and TLS."
+        ) from None
 
 
 @contextmanager
@@ -57,14 +80,22 @@ def validate_core(settings: dict, candidate: Path):
     try:
         result = subprocess.run(
             [settings["binary"], "-t", "-d", settings["config_dir"], "-f", str(candidate)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=120, check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            timeout=120,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        raise ProxyWrapError("Mihomo configuration check could not complete; check binary and network.")
+        raise ProxyWrapError(
+            "Mihomo configuration check could not complete; check binary and network."
+        )
     if result.returncode:
         # Core diagnostics may contain provider URLs and credentials. Keep them out of normal logs.
-        raise ProxyWrapError("Mihomo rejected the candidate configuration. Inspect the subscription "
-                             "and overrides privately; the running configuration was preserved.")
+        raise ProxyWrapError(
+            "Mihomo rejected the candidate configuration. Inspect the subscription "
+            "and overrides privately; the running configuration was preserved."
+        )
 
 
 def _restore(directory: Path, transaction: Path):
@@ -87,6 +118,11 @@ def recover(directory: Path, service, apply: bool):
     if not (transaction / "state.json").exists():
         shutil.rmtree(transaction)
         return
+    pending = json.loads((transaction / "state.json").read_text())
+    if pending.get("was_running") and not apply and service.status():
+        raise ProxyWrapError(
+            "Interrupted active update needs recovery; run sudo proxywrap update first."
+        )
     state = _restore(directory, transaction)
     if state.get("was_running") and apply:
         service.restart()
@@ -98,6 +134,10 @@ def update(settings: dict, apply=True, edit=None) -> bool:
     """Download and apply. A stopped service stays stopped; edit stages local overrides."""
     directory = Path(settings["config_dir"])
     with locked(directory):
+        if (directory / ".deploy-transaction").exists():
+            raise ProxyWrapError(
+                "An interrupted installation needs recovery; rerun install.sh first."
+            )
         return _update(settings, apply, edit)
 
 
@@ -110,9 +150,17 @@ def _update(settings: dict, apply: bool, edit=None) -> bool:
     subscription = parse(raw)
     check_subscription(subscription)
     common = read_yaml(directory / "override.yaml")
+    original_common = copy.deepcopy(common)
     if edit:
         common = edit(common)
     final = merge(merge(subscription, common), read_yaml(directory / "override-platform.yaml"))
+    if edit:
+        for key in common:
+            if common.get(key) != original_common.get(key) and final.get(key) != common.get(key):
+                raise ProxyWrapError(
+                    "A higher-priority platform override prevents this change; "
+                    "edit override-platform.yaml first."
+                )
     check_safety(final)
     payload = dump(final)
     fd, name = tempfile.mkstemp(prefix=".candidate-", suffix=".yaml", dir=directory)
@@ -158,8 +206,10 @@ def _update(settings: dict, apply: bool, edit=None) -> bool:
                 if not service.status():
                     raise ProxyWrapError("Service did not recover.")
         except Exception:
-            raise ProxyWrapError("Activation failed and rollback could not restore service. "
-                                 "Previous files remain in .transaction; run stop, then recover.") from None
+            raise ProxyWrapError(
+                "Activation failed and rollback could not restore service. "
+                "Previous files remain in .transaction; run stop, then update or start to recover."
+            ) from None
         shutil.rmtree(transaction)
         raise ProxyWrapError("Activation failed; previous configuration was restored.") from None
     backup = directory / ".previous"

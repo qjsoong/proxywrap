@@ -1,0 +1,39 @@
+# Installed as override.yaml; the installer adds a persistent random authentication entry.
+# Edit local settings here; preserve your provider DNS unless deliberately changing it.
+mixed-port: 7890
+allow-lan: true
+bind-address: '*'
+mode: rule
+ipv6: true
+external-controller: 127.0.0.1:9090
+external-ui: ui
+external-ui-url: https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip
+profile:
+  store-selected: true
+skip-auth-prefixes:
+- 127.0.0.1/8
+- ::1/128
+lan-allowed-ips:
+- 127.0.0.0/8
+- ::1/128
+- 10.0.0.0/8
+- 172.16.0.0/12
+- 192.168.0.0/16
+- fc00::/7
+- fe80::/10
+lan-disallowed-ips: []
+external-controller-tls: ''
+external-controller-unix: ''
+external-controller-pipe: ''
+listeners: []
+tunnels: []
+port: 0
+socks-port: 0
+redir-port: 0
+tproxy-port: 0
+secret: ''
+external-controller-cors:
+  allow-origins:
+  - http://127.0.0.1:9090
+  - http://localhost:9090
+  allow-private-network: false
