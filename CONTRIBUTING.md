@@ -95,5 +95,5 @@ clean guests; `install.sh` expects the complete source bundle, not a standalone
 downloaded script. Recheck upstream package digests when changing the pinned
 Mihomo or Homebrew bootstrap version.
 
-The maintainer must select the project license before publishing an open-source
-release. Do not infer license terms from the project's name or its dependencies.
+ProxyWrap is licensed under the [Apache License 2.0](LICENSE). Preserve existing
+license and attribution notices; upstream components retain their own licenses.

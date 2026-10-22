@@ -29,4 +29,4 @@ Automated tests use temporary directories, a temporary loopback HTTP server for 
 
 ## Contributions
 
-Use English in source comments, CLI output, documentation and commit messages. Keep functions focused, prefer the standard library and add meaningful regression tests. Review diffs for secrets and run relevant checks before small focused Conventional Commits. Do not rewrite history, push, or create remote repositories without authorization. The maintainer selects the project license; do not invent license terms.
+Use English in source comments, CLI output, documentation and commit messages. Keep functions focused, prefer the standard library and add meaningful regression tests. Review diffs for secrets and run relevant checks before small focused Conventional Commits. Do not rewrite history, push, or create remote repositories without authorization. ProxyWrap uses the Apache License 2.0 (SPDX: Apache-2.0). Preserve the license and attribution notices; license changes require the maintainer's explicit instruction.

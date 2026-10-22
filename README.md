@@ -236,6 +236,5 @@ and the separate [network validation procedure](docs/validation.md).
 ## Development and license
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, checks, and release bundle
-creation. The project license is pending maintainer selection; [LICENSE](LICENSE)
-currently grants no open-source license. Upstream components retain their own
-licenses.
+creation. ProxyWrap is licensed under the [Apache License 2.0](LICENSE).
+Upstream components retain their own licenses.
