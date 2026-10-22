@@ -112,8 +112,9 @@ pw_install_linux() {
         *' debian '*|*' ubuntu '*|*' raspbian '*) ;;
         *) pw_die 'Only Debian-family Linux distributions are supported.' ;;
     esac
-    command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]] ||
+    if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
         pw_die 'A running systemd installation is required.'
+    fi
     PW_ARCH="$(pw_arch "$(dpkg --print-architecture)")" ||
         pw_die 'Unsupported Debian package architecture.'
     if [[ "$PW_ARCH" == armv7 ]]; then
