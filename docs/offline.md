@@ -26,7 +26,9 @@ and dependency wheels. Bundled components retain their upstream licenses.
 
 The `Linux offline bundle` GitHub Actions workflow also builds Ubuntu 24.04 AMD64
 media as a downloadable artifact, on relevant PRs or manual dispatch. A successful
-build does not establish that installation works in a disconnected guest.
+build is followed by installation of OS packages, Mihomo and wheels in a fresh
+Ubuntu container with `--network none` and no preinstalled Python. This checks
+artifact completeness, not systemd deployment or TUN behavior in a guest.
 
 Copy the archive and its `.sha256` file from `dist/` to a USB drive. On the target,
 verify the archive checksum, extract it, enter `proxywrap-offline`, then run:

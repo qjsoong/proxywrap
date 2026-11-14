@@ -27,3 +27,23 @@ jobs:
           name: proxywrap-offline-ubuntu-24.04-amd64
           path: dist/proxywrap-offline-*
           if-no-files-found: error
+  offline-smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxywrap-offline-ubuntu-24.04-amd64
+          path: media
+      - name: Extract verified transfer media
+        run: |
+          cd media
+          sha256sum --check *.sha256
+          tar -xzf *.tar.gz
+      - name: Install payload in a fresh container with no network
+        run: |
+          docker pull ubuntu:24.04
+          docker run --rm --network none \
+            -e PW_OFFLINE_CONTAINER_TEST=1 \
+            -v "$PWD/media:/media:ro" ubuntu:24.04 \
+            bash /media/proxywrap-offline/scripts/test-offline-payload.sh

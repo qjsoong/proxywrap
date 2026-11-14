@@ -39,7 +39,7 @@ rm -f "$payload"/debs/mihomo*.deb
 cp "$payload/mihomo.deb" "$PW_TMP/core.deb"
 mkdir "$payload/licenses"
 dpkg-deb --fsys-tarfile "$PW_TMP/core.deb" | tar -x -C "$payload/licenses" \
-    --wildcards './usr/share/doc/*/copyright'
+    './usr/share/licenses/mihomo/LICENSE'
 cat > "$PW_TMP/proxywrap-offline/INSTALL-OFFLINE.txt" <<'HELP'
 Run: bash install.sh --offline-dir ./offline
 Use only on the distribution, version and architecture recorded in offline/target.
