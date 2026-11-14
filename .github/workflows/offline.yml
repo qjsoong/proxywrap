@@ -1,0 +1,29 @@
+name: Linux offline bundle
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - install.sh
+      - scripts/build-offline.sh
+      - .github/workflows/offline.yml
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Install build prerequisites
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git curl ca-certificates python3 python3-venv
+      - uses: actions/checkout@v4
+      - name: Build Ubuntu 24.04 AMD64 transfer media
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          bash scripts/build-offline.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxywrap-offline-ubuntu-24.04-amd64
+          path: dist/proxywrap-offline-*
+          if-no-files-found: error
