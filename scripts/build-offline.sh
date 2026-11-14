@@ -53,5 +53,5 @@ HELP
 mv "$PW_TMP/SHA256SUMS" "$payload/SHA256SUMS"
 archive="dist/proxywrap-offline-$ID-$VERSION_ID-$(dpkg --print-architecture).tar.gz"
 tar -czf "$archive" -C "$PW_TMP" proxywrap-offline
-sha256sum "$archive" > "$archive.sha256"
+(cd dist && sha256sum "${archive#dist/}") > "$archive.sha256"
 printf 'Created %s from committed HEAD. Test in a disposable guest before publishing.\n' "$archive"
