@@ -128,6 +128,15 @@ pw_offline_check() {
     [[ -f "$PW_OFFLINE_DIR/mihomo.deb" && -d "$PW_OFFLINE_DIR/debs" &&
         -d "$PW_OFFLINE_DIR/wheels" ]] || pw_die 'Offline payload is incomplete.'
 }
+pw_install_offline_deps() {
+    # --no-download also disables copying local .deb inputs into APT's cache.
+    # Stage the prepared archives first, then let APT order the installation.
+    pw_root install -d -m 0755 "$PW_TMP/apt-archives/partial"
+    pw_root cp "$PW_OFFLINE_DIR"/debs/*.deb "$PW_TMP/apt-archives/"
+    pw_root env DEBIAN_FRONTEND=noninteractive apt-get --no-download \
+        -o "Dir::Cache::archives=$PW_TMP/apt-archives" install -y \
+        "$PW_OFFLINE_DIR"/debs/*.deb
+}
 pw_install_linux() {
     [[ -r /etc/os-release ]] || pw_die 'Cannot identify this Linux distribution.'
     # os-release is an operating-system-owned shell assignment file.
@@ -150,8 +159,7 @@ pw_install_linux() {
     if [[ -n "$PW_OFFLINE_DIR" ]]; then
         pw_offline_check
         pw_info 'Installing Debian dependencies from offline media.'
-        pw_root env DEBIAN_FRONTEND=noninteractive apt-get --no-download install -y \
-            "$PW_OFFLINE_DIR"/debs/*.deb
+        pw_install_offline_deps
     else
         pw_info 'Installing required Debian packages.'
         pw_root apt-get update

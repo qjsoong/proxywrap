@@ -18,7 +18,13 @@ fi
 printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
 chmod 0755 /usr/sbin/policy-rc.d
 # There is no external network, no prepopulated APT cache and no Python runtime.
-DEBIAN_FRONTEND=noninteractive apt-get --no-download install -y /media/proxywrap-offline/offline/debs/*.deb
+# Exercise the same dependency-install function as the real installer.
+# shellcheck source=install.sh
+source ./install.sh
+PW_OFFLINE_DIR=/media/proxywrap-offline/offline
+PW_TMP="$(mktemp -d)"
+trap 'rm -rf -- "$PW_TMP"' EXIT
+pw_install_offline_deps
 dpkg -i offline/mihomo.deb
 /usr/bin/python3 -m venv /tmp/runtime
 /tmp/runtime/bin/python -I -m pip install --disable-pip-version-check \
