@@ -205,3 +205,59 @@ disconnect/reconnect preserved those rules, but `networkctl reconfigure` removed
 them. After administrator-driven network-manager reconfiguration, inspect the
 rules and run `sudo proxywrap restart` when necessary. The wrapper does not change
 unrelated network-manager settings to retain foreign rules.
+
+## Linux offline follow-up (2026-11-15)
+
+The merged offline installer was tested on Debian 13.7 ARM64, kernel
+6.12.116, in a fresh disposable Tart clone with real systemd. The matching
+transfer archive was built in a separate clone. Python interpreters were removed
+from the target and its APT archive cache was emptied before installation.
+Removing Python also removed the image's netplan tooling, so the fixture retained
+its existing generated networkd configuration for reboot. Guest-only nftables
+rules rejected external traffic while allowing loopback, established client
+sessions and documentation-only probe destinations. An external HTTPS request
+was explicitly checked to fail. No host networking was modified.
+
+This found a regression missed by root-only container testing: the original
+installer staged APT archives as root, then its ordinary-user EXIT trap could
+not remove them. A successful deployment consequently returned failure and left
+the cache behind. After keeping staging directories and copied archives owned
+by the installing user, a second clean clone passed:
+
+- Wrong-target, corrupted-core and missing-wheel rejection before any package
+  database changes; successful offline dependency, Mihomo and wheel installation.
+- Real sudo/APT cache cleanup on both successful installation and invalid-package
+  failure, without leftover installer temporary directories. Reproduce these
+  cleanup checks as an ordinary sudo-capable guest user with
+  `PROXYWRAP_DISPOSABLE_VM=1 bash scripts/test-offline-cache.sh /path/to/offline`.
+- `--no-start` enables startup without starting Mihomo or creating TUN; explicit
+  start runs the packaged systemd unit with a ProxyWrap drop-in, root execution,
+  `SKIP_SYSTEM_IPV6_CHECK=1` and private runtime configuration files.
+- IPv4 and explicit IPv6 TUN addresses and policy routes; controlled IPv4/IPv6
+  upstream markers correlated with intercepted connection API records; UDP and
+  TCP DNS interception over both address families.
+- Unchanged update, offline reinstallation and forced reinstallation preserve
+  the running PID; forced installation also preserves saved credentials.
+- Stop/start/restart, automatic recovery after an abnormal core exit, and an
+  actual offline reboot with a changed boot ID and automatic service startup.
+  Controlled TUN and DNS checks passed again after restart, crash and reboot.
+- Independent host-side LAN requests are rejected without credentials and reach
+  the controlled upstream with authentication. The controller remains
+  inaccessible from LAN. These checks were repeated on the repaired guest after
+  its final offline reboot.
+
+The fresh disconnected guest's dashboard returns HTTP 404 because the archive
+does not contain dashboard assets. Core operation, CLI and controller API work;
+dashboard availability is **not** a passed offline check. A preparation-time
+online boot downloaded the assets; they were moved aside before the final
+offline reboot so that test did not rely on the downloaded dashboard cache.
+The controlled upstream is synthetic, not an encrypted remote provider, and the
+IPv6 checks do not establish globally routable IPv6 egress or absence of all
+possible leaks. These results do not constitute ARMv7 or AMD64 VM deployment
+coverage. AMD64 Ubuntu 24.04 remains covered by the disconnected container test.
+
+The 96-test unit/simulated suite, Ruff checks and formatting, Bash checks, and CI
+ShellCheck passed for the repair. CI also rebuilt the Ubuntu 24.04 AMD64 archive
+and passed installation as an ordinary sudo-capable user in a network-disabled
+container with no Python or populated package cache. The container smoke test
+now exercises that user boundary on future payload or helper changes.
