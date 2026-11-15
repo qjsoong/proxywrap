@@ -242,3 +242,29 @@ and the separate [network validation procedure](docs/validation.md).
 See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, checks, and release bundle
 creation. ProxyWrap is licensed under the [Apache License 2.0](LICENSE).
 Upstream components retain their own licenses.
+
+## Terminal dashboard
+
+Run `proxywrap tui` in an interactive terminal (including SSH). It uses Python's
+standard-library curses module and the local Mihomo API, so it needs no browser,
+web assets, extra Python packages or Internet access.
+
+- `1`: service/core status, transferred byte totals and service actions.
+- `2`: manual selector groups; use arrows or `j`/`k` and Enter to choose a node.
+  The current node is marked `*`. Escape returns to the group list.
+- `3`: active connection destinations and proxy chains; arrows scroll.
+- `q`: quit and restore the terminal.
+
+On the status view, `s` starts, `x` stops, `r` restarts and `u` updates the
+subscription. Changes require `y` confirmation, then use the existing CLI and
+request sudo when needed; press Enter after the command to return. Starting or
+stopping TUN can interrupt SSH. Updating a subscription still needs access to its
+endpoint. Browsing does not require sudo. Only manual selector groups can be
+changed; automatic policy groups remain core-managed. `proxywrap select -- GROUP
+NODE` provides the same validated node selection without opening the dashboard.
+
+Status refreshes approximately every two seconds. Totals reset with the core and
+are not billing measurements; a running service alone does not prove proxy
+correctness. The dashboard assumes ProxyWrap's managed loopback controller at
+`127.0.0.1:9090` with its default API settings. It is a separate terminal interface;
+it does not install the optional web dashboard or edit subscription YAML.

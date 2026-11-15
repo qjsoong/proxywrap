@@ -70,6 +70,10 @@ def parser():
     group.add_argument("--password-file", type=Path, help="Read the password from a private file.")
     lan = commands.add_parser("lan", help="Replace the allowed LAN client networks.")
     lan.add_argument("networks", nargs="+", help="CIDR networks; loopback is always retained.")
+    commands.add_parser("tui", help="Open the offline terminal dashboard.")
+    select = commands.add_parser("select", help="Select a node in a manual proxy group.")
+    select.add_argument("group")
+    select.add_argument("node")
     return result
 
 
@@ -90,11 +94,15 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     args = parser().parse_args(argv)
     try:
-        if args.command not in ("status", "doctor"):
+        if args.command not in ("status", "doctor", "tui"):
             code = elevate(argv)
             if code is not None:
                 return code
         settings = load_settings()
+        if args.command == "tui":
+            from .tui import run
+
+            return run(settings)
         service = Service(settings)
         directory = Path(settings["config_dir"])
         pending_deploy = directory / ".deploy-transaction"
@@ -154,6 +162,16 @@ def main(argv=None):
                     recover(directory, service, apply=True)
                 getattr(service, args.command)()
             print(f"Service operation completed: {args.command}.")
+        elif args.command == "select":
+            from .tui import Controller
+
+            with locked(directory):
+                if pending_deploy.exists():
+                    raise ProxyWrapError(
+                        "An interrupted installation needs recovery; rerun install.sh first."
+                    )
+                Controller().select(args.group, args.node)
+            print("Proxy selection updated.")
         elif args.command == "auth":
             if args.action == "show":
                 for entry in read_yaml(directory / "config.yaml").get("authentication", []):
