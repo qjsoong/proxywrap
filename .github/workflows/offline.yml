@@ -5,6 +5,10 @@ on:
     paths:
       - install.sh
       - scripts/build-offline.sh
+      - scripts/test-offline*.sh
+      - pyproject.toml
+      - src/**
+      - templates/**
       - .github/workflows/offline.yml
 permissions:
   contents: read
@@ -40,10 +44,20 @@ jobs:
           cd media
           sha256sum --check *.sha256
           tar -xzf *.tar.gz
-      - name: Install payload in a fresh container with no network
+      - name: Prepare an ordinary sudo-capable test user without Python
         run: |
-          docker pull ubuntu:24.04
+          docker build -t proxywrap-offline-test - <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          RUN apt-get update && apt-get install -y --no-install-recommends sudo \
+              && useradd --create-home tester \
+              && echo 'tester ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/tester \
+              && chmod 0440 /etc/sudoers.d/tester \
+              && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+          USER tester
+          DOCKERFILE
+      - name: Install payload as an ordinary user with no network
+        run: |
           docker run --rm --network none \
             -e PW_OFFLINE_CONTAINER_TEST=1 \
-            -v "$PWD/media:/media:ro" ubuntu:24.04 \
+            -v "$PWD/media:/media:ro" proxywrap-offline-test \
             bash /media/proxywrap-offline/scripts/test-offline-payload.sh
