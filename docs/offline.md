@@ -53,6 +53,11 @@ network access when Mihomo validates or starts. Local subscription import and
 bundling those provider-specific resources are not implemented. Supply your own
 subscription privately; no credentials belong in a public release archive.
 
+The web dashboard is not included in the payload either. On a fresh offline
+installation, Mihomo's attempted dashboard download fails and `/ui/` returns
+HTTP 404. This does not prevent the core, CLI, or controller API from working.
+Dashboard availability requires separately prepared assets or later connectivity.
+
 Checksums detect corruption, not publisher identity. Obtain the archive and
 expected checksum through a trusted channel. Packages can update system libraries;
 test each release in a disposable matching guest before distributing it.
