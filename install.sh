@@ -131,8 +131,9 @@ pw_offline_check() {
 pw_install_offline_deps() {
     # --no-download also disables copying local .deb inputs into APT's cache.
     # Stage the prepared archives first, then let APT order the installation.
-    pw_root install -d -m 0755 "$PW_TMP/apt-archives/partial"
-    pw_root cp "$PW_OFFLINE_DIR"/debs/*.deb "$PW_TMP/apt-archives/"
+    # Keep the cache owned by the invoking user so the EXIT trap can remove it.
+    install -d -m 0755 "$PW_TMP/apt-archives/partial"
+    cp "$PW_OFFLINE_DIR"/debs/*.deb "$PW_TMP/apt-archives/"
     pw_root env DEBIAN_FRONTEND=noninteractive apt-get --no-download \
         -o "Dir::Cache::archives=$PW_TMP/apt-archives" install -y \
         "$PW_OFFLINE_DIR"/debs/*.deb
