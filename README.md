@@ -26,6 +26,10 @@ and available bottles vary by macOS version and CPU; consult its
 
 ## Install
 
+For Linux machines that cannot reach GitHub or package indexes, prepare a
+[USB-transferable offline bundle](docs/offline.md) on a matching connected system.
+macOS offline installation is not supported yet.
+
 Extract a complete ProxyWrap source release, enter its directory, and run:
 
 ```sh

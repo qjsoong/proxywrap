@@ -13,7 +13,7 @@ ProxyWrap is a lightweight wrapper for existing proxy cores. Alpha integrates Mi
 
 ## Development
 
-Use Python 3.10 or newer in a dedicated virtual environment. PyYAML is the only runtime dependency. Never install Python packages into a managed system interpreter. Run `python3 -m venv .venv`, `.venv/bin/python -m pip install -e '.[dev]'`, `.venv/bin/python -m unittest discover -s tests -v`, `.venv/bin/ruff check .`, `.venv/bin/ruff format --check src tests scripts`, `bash -n install.sh scripts/*.sh`, and `shellcheck install.sh scripts/*.sh`. Keep CI synchronized with these commands. Build distributable source bundles with `scripts/build-release.sh`.
+Use Python 3.10 or newer in a dedicated virtual environment. PyYAML is the only runtime dependency. Never install Python packages into a managed system interpreter. Run `python3 -m venv .venv`, `.venv/bin/python -m pip install -e '.[dev]'`, `.venv/bin/python -m unittest discover -s tests -v`, `.venv/bin/ruff check .`, `.venv/bin/ruff format --check src tests scripts`, `bash -n install.sh scripts/*.sh`, and `shellcheck install.sh scripts/*.sh`. Keep CI synchronized with these commands. Build distributable source bundles with `scripts/build-release.sh`. Prepare Linux offline media with `scripts/build-offline.sh` on a matching distribution/release/architecture; see `docs/offline.md`. Offline paths must never fall back to apt or pip downloads.
 
 ## Configuration invariants
 

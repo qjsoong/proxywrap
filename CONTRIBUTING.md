@@ -97,3 +97,7 @@ Mihomo or Homebrew bootstrap version.
 
 ProxyWrap is licensed under the [Apache License 2.0](LICENSE). Preserve existing
 license and attribution notices; upstream components retain their own licenses.
+
+For transferable Linux bundles, see [offline media](docs/offline.md). Build on a
+matching connected Linux system with `bash scripts/build-offline.sh`; guest
+validation is required before publishing these artifacts.

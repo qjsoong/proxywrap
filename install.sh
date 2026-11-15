@@ -11,6 +11,7 @@ pw_help() {
 Usage: ./install.sh [options]
 
 Install Mihomo and ProxyWrap from this release directory.
+  --offline-dir DIR Use a prepared Linux offline payload (no package downloads)
   --url-file FILE   Read the complete subscription URL from a private file
   --no-start        Configure and enable boot startup without starting now
   --start           Start now, including over SSH (may interrupt the connection)
@@ -24,10 +25,13 @@ startup at the next boot. Run this script without sudo on macOS.
 HELP
 }
 pw_parse() {
-    PW_URL_FILE='' PW_START=auto PW_FORCE=0 PW_VERSION=v1.19.32 PW_VERSION_SET=0
+    PW_URL_FILE='' PW_START=auto PW_FORCE=0 PW_VERSION=v1.19.32 PW_VERSION_SET=0 PW_OFFLINE_DIR=
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
             --help|-h) pw_help; return 10 ;;
+            --offline-dir)
+                [[ "$#" -ge 2 && -n "$2" ]] || pw_die '--offline-dir requires a directory.'
+                PW_OFFLINE_DIR="$2"; shift ;;
             --url-file)
                 [[ "$#" -ge 2 && -n "$2" ]] || pw_die '--url-file requires a file.'
                 PW_URL_FILE="$2"; shift ;;
@@ -103,6 +107,36 @@ pw_packaged_default() {
 pw_package_binary() {
     dpkg-query -L mihomo 2>/dev/null | awk '/\/bin\/mihomo$/ {print; exit}'
 }
+# The payload is trusted installation media, not an executable configuration file.
+pw_offline_check() {
+    [[ "$PW_PLATFORM" == linux ]] || pw_die 'Offline installation currently supports Linux only.'
+    [[ "$PW_VERSION_SET" -eq 0 ]] || pw_die '--version cannot override an offline payload.'
+    PW_OFFLINE_DIR="$(cd -- "$PW_OFFLINE_DIR" && pwd -P)" || pw_die 'Offline payload not found.'
+    local expected
+    expected="$(printf '%s\n' "$ID" "$VERSION_ID" "$(dpkg --print-architecture)")"
+    [[ -f "$PW_OFFLINE_DIR/target" && "$(cat "$PW_OFFLINE_DIR/target")" == "$expected" ]] ||
+        pw_die 'Offline payload must match distribution, version and package architecture.'
+    (cd "$PW_OFFLINE_DIR" && sha256sum --check --strict SHA256SUMS) ||
+        pw_die 'Offline payload checksum verification failed.'
+    # Reject unlisted additions as well as altered files before invoking apt or pip.
+    (cd "$PW_OFFLINE_DIR" &&
+        find . -type f ! -name SHA256SUMS -exec sha256sum {} + | sort > "$PW_TMP/payload-sums")
+    cmp -s "$PW_TMP/payload-sums" "$PW_OFFLINE_DIR/SHA256SUMS" ||
+        pw_die 'Offline payload contains missing or unlisted files.'
+    [[ -z "$(find "$PW_OFFLINE_DIR" -type l -print -quit)" ]] ||
+        pw_die 'Offline payload must not contain symbolic links.'
+    [[ -f "$PW_OFFLINE_DIR/mihomo.deb" && -d "$PW_OFFLINE_DIR/debs" &&
+        -d "$PW_OFFLINE_DIR/wheels" ]] || pw_die 'Offline payload is incomplete.'
+}
+pw_install_offline_deps() {
+    # --no-download also disables copying local .deb inputs into APT's cache.
+    # Stage the prepared archives first, then let APT order the installation.
+    pw_root install -d -m 0755 "$PW_TMP/apt-archives/partial"
+    pw_root cp "$PW_OFFLINE_DIR"/debs/*.deb "$PW_TMP/apt-archives/"
+    pw_root env DEBIAN_FRONTEND=noninteractive apt-get --no-download \
+        -o "Dir::Cache::archives=$PW_TMP/apt-archives" install -y \
+        "$PW_OFFLINE_DIR"/debs/*.deb
+}
 pw_install_linux() {
     [[ -r /etc/os-release ]] || pw_die 'Cannot identify this Linux distribution.'
     # os-release is an operating-system-owned shell assignment file.
@@ -122,11 +156,18 @@ pw_install_linux() {
             *) pw_die 'The official ARMv7 package requires an ARMv7 or newer processor.' ;;
         esac
     fi
-    pw_info 'Installing required Debian packages.'
-    pw_root apt-get update
-    pw_root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        ca-certificates curl python3 python3-venv iproute2 nftables
+    if [[ -n "$PW_OFFLINE_DIR" ]]; then
+        pw_offline_check
+        pw_info 'Installing Debian dependencies from offline media.'
+        pw_install_offline_deps
+    else
+        pw_info 'Installing required Debian packages.'
+        pw_root apt-get update
+        pw_root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates curl python3 python3-venv iproute2 nftables
+    fi
     PW_PYTHON="$(command -v python3)"
+    [[ -z "$PW_OFFLINE_DIR" ]] || PW_PYTHON=/usr/bin/python3
     PW_CONFIG=/etc/mihomo
     PW_PACKAGE_DEFAULT=0
     PW_BINARY="$(command -v mihomo || true)"
@@ -143,10 +184,15 @@ pw_install_linux() {
     fi
     PW_ASSET="mihomo-linux-$PW_ARCH-$PW_VERSION.deb"
     local digest
-    digest="$(pw_mihomo_digest)" || pw_die 'Official package integrity metadata is unavailable.'
-    pw_info "Downloading official Mihomo $PW_VERSION ($PW_ARCH)."
-    pw_download "https://github.com/MetaCubeX/mihomo/releases/download/$PW_VERSION/$PW_ASSET" \
-        "$PW_TMP/mihomo.deb" || pw_die 'Mihomo download failed; check network access to GitHub.'
+    if [[ -n "$PW_OFFLINE_DIR" ]]; then
+        cp "$PW_OFFLINE_DIR/mihomo.deb" "$PW_TMP/mihomo.deb"
+        digest="$(pw_mihomo_digest)"
+    else
+        digest="$(pw_mihomo_digest)" || pw_die 'Official package integrity metadata is unavailable.'
+        pw_info "Downloading official Mihomo $PW_VERSION ($PW_ARCH)."
+        pw_download "https://github.com/MetaCubeX/mihomo/releases/download/$PW_VERSION/$PW_ASSET" \
+            "$PW_TMP/mihomo.deb" || pw_die 'Mihomo download failed; check network access to GitHub.'
+    fi
     [[ "$(pw_sha256 "$PW_TMP/mihomo.deb")" == "$digest" ]] ||
         pw_die 'Mihomo package checksum did not match; refusing installation.'
     # A temporary mask prevents package scripts from starting TUN before configuration.
@@ -244,8 +290,13 @@ pw_install_app() {
     PW_NEW_RUNTIME="$(pw_root mktemp -d "$app_root/releases/alpha.XXXXXXXX")"
     pw_root chmod 0755 "$PW_NEW_RUNTIME"
     pw_root "$PW_PYTHON" -m venv "$PW_NEW_RUNTIME"
-    pw_root "$PW_NEW_RUNTIME/bin/python" -I -m pip install --disable-pip-version-check \
-        --no-cache-dir "$PW_SOURCE"
+    if [[ -n "$PW_OFFLINE_DIR" ]]; then
+        pw_root "$PW_NEW_RUNTIME/bin/python" -I -m pip install --disable-pip-version-check \
+            --no-cache-dir --no-index --find-links "$PW_OFFLINE_DIR/wheels" "$PW_OFFLINE_DIR"/wheels/proxywrap-*.whl
+    else
+        pw_root "$PW_NEW_RUNTIME/bin/python" -I -m pip install --disable-pip-version-check \
+            --no-cache-dir "$PW_SOURCE"
+    fi
     local -a args
     args=(--platform "$PW_PLATFORM" --config-dir "$PW_CONFIG" --binary "$PW_BINARY"
         --settings-file "$settings_file")
@@ -309,6 +360,9 @@ pw_main() {
     if [[ "$(id -u)" -ne 0 ]]; then
         command -v sudo >/dev/null 2>&1 || pw_die 'sudo is required for system installation.'
         sudo -v
+    fi
+    if [[ -n "$PW_OFFLINE_DIR" && "$PW_PLATFORM" != linux ]]; then
+        pw_die 'Offline installation currently supports Linux only.'
     fi
     if [[ "$PW_PLATFORM" == linux ]]; then pw_install_linux; else pw_install_macos; fi
     "$PW_PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' ||
