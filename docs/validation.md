@@ -261,3 +261,30 @@ ShellCheck passed for the repair. CI also rebuilt the Ubuntu 24.04 AMD64 archive
 and passed installation as an ordinary sudo-capable user in a network-disabled
 container with no Python or populated package cache. The container smoke test
 now exercises that user boundary on future payload or helper changes.
+
+## Terminal dashboard follow-up (2026-11-15)
+
+The terminal dashboard was installed from a local wheel without indexes or new
+runtime dependencies in a separate clone of the Debian offline guest. A real PTY
+check exercised initial rendering, selector navigation, cancelled and confirmed
+sudo-backed node switching with API verification, restoring the original node,
+view changes, small-terminal resize, cancelled stop, confirmed stop/start, a live
+TUN connection in the connections view, clean exit and terminal mode restoration.
+The guest retained its external-network block. No host service or networking was
+changed. Real Mihomo returns `connections: null` while idle; the first run exposed
+that compatibility issue, which was fixed and given a regression test.
+
+Reproduce with the existing synthetic subscription/upstream fixture and the new
+wheel installed inside a disposable Linux guest:
+
+```sh
+PROXYWRAP_DISPOSABLE_VM=1 python3 scripts/vm-tui-check.py
+```
+
+This script changes the fixture's Probe selector, stops and starts the guest
+service, and restores the selected controlled upstream on the successful path.
+It requires an ordinary sudo-capable user and positively identifies the Linux
+Apple Virtualization guest. Keep a recoverable baseline before running it.
+The 106-test unit/simulated suite also passed locally. Real macOS terminal
+interaction has not been exercised in this follow-up; cross-platform automated
+checks and Linux guest results must not be described as macOS VM results.
